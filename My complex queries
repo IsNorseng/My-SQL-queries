@@ -1,0 +1,48 @@
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	 	DECLARE @D_START DATETIME, 
+		@D_END DATETIME;
+	
+		SET @D_START = '2023-10-28';
+		SET @D_END = '2023-11-10';
+		SELECT
+		pr.Name,
+		lr.Area,
+		COUNT(lr.id) AS total_records,
+		approved_records.approved_entries,
+		ROUND(CAST(reject_records.reject_entries AS float) / CAST(COUNT(lr.id) AS float), 4) AS percent_denial,
+		approved_records.average_value AS average_value,
+		ROUND(SUM(CAST(lr.Approval AS float)) / CAST(COUNT(lr.id) AS float), 4) AS dirty_approval,
+		ROUND(SUM(CAST(lr.Approval AS float)) / CAST(approved_records.approved_entries + reject_records.reject_entries AS float), 4) AS operational_approval
+		FROM Record lr 
+		LEFT JOIN Product pr ON lr.Product =pr.id
+		LEFT JOIN (
+				SELECT
+				pr.Name AS approved_product,
+				lr.Area AS  approved_area,	
+				pr.SubType AS approved_subtype,
+				CAST(COUNT(lr.id) AS float) AS approved_entries,
+				AVG(lr.TotalAmountWithoutDeadstock) AS average_value
+				FROM Record lr 
+				LEFT JOIN Product pr ON lr.Product = pr.id
+				WHERE lr.Approval = 1
+				AND lr.DateOfRecord BETWEEN @D_START AND @D_END
+				AND lr.Type = 0
+				GROUP BY pr.Name, lr.Area, pr.SubType
+					) AS approved_records
+				ON pr.Name = approved_records.approved_product
+			LEFT JOIN (
+				SELECT
+				pr.Name AS reject_product,
+				lr.Area AS  reject_area,	
+				CAST(COUNT(lr.id) AS float) AS  reject_entries
+				FROM Record lr
+				LEFT JOIN Product pr ON lr.Product = pr.id
+				WHERE lr.RecordStatus = 4
+				AND lr.DateOfRecord BETWEEN  @D_START AND @D_END
+				AND lr.Type = 0
+				GROUP BY pr.Name, lr.Area
+					) AS reject_records
+				ON pr.Name = reject_records.reject_product
+		WHERE lr.DateOfRecord BETWEEN @D_START AND @D_END
+		AND lr.Type = 0
+		GROUP BY pr.Name, lr.Area, approved_records.approved_entries , approved_records.average_value, reject_records.reject_entries
