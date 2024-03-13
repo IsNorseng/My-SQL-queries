@@ -46,3 +46,50 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
 		WHERE lr.DateOfRecord BETWEEN @D_START AND @D_END
 		AND lr.Type = 0
 		GROUP BY pr.Name, lr.Area, approved_records.approved_entries , approved_records.average_value, reject_records.reject_entries
+
+
+
+
+
+
+
+
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH cte_leads AS (
+  SELECT
+    l.oid,
+    p.Name AS product,
+    l.Country AS GEO,
+    p.ProductSubType,
+    l.TotalAmountWithoutDeadstock,
+    l.LeadStatus,
+    l.LeadType,
+    l.Approve,
+    l.DateOfOrder
+  FROM Lead l
+  LEFT JOIN Product p ON l.Product = p.Oid
+  WHERE l.DateOfOrder BETWEEN '2022-10-29' AND '2022-11-05'
+    AND l.LeadType = 0
+    )
+SELECT
+  'Product' AS Name,
+  'Country' AS Country,
+  COUNT(oid) AS total_leads,
+  COUNT(CASE WHEN Approve = 1 THEN oid END) AS approved_leads,
+  ROUND(CAST(COUNT(CASE WHEN LeadStatus = 4 THEN oid END) AS float) / NULLIF(COUNT(oid), 0), 4) AS percent_rejection,
+  AVG(TotalAmountWithoutDeadstock) AS avg_check,
+  ROUND(SUM(CAST(Approve AS float)) / NULLIF(COUNT(Oid), 0), 4) AS dirt_approve,
+  ROUND(CAST(COUNT(CASE WHEN Approve = 1 THEN oid END) AS float) / NULLIF((CAST(COUNT(CASE WHEN Approve = 1 THEN oid END) AS float) + CAST(COUNT(CASE WHEN LeadStatus = 4 THEN oid END) AS float)), 0), 4) AS work_approve
+FROM cte_leads
+GROUP BY product, GEO
+ORDER BY product;
+
+
+
+
+
+
+
+
+
