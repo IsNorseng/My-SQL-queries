@@ -1,3 +1,60 @@
+
+--Расчёт LTV
+
+SELECT 
+    DATE_TRUNC('month', u.created_at)::date AS account_creation_month,
+    SUM(o.total_amt) / COUNT(DISTINCT o.user_id) AS ltv
+FROM 
+    tools_shop.users AS u
+INNER JOIN 
+    tools_shop.orders AS o ON u.user_id = o.user_id
+GROUP BY 
+    account_creation_month;
+
+
+--Расчёт конверсии
+
+SELECT ROUND(COUNT(DISTINCT o.user_id) * 100.0 / COUNT(DISTINCT u.user_id), 1) AS conversion_rate
+FROM tools_shop.users AS u
+LEFT JOIN tools_shop.orders AS o ON u.user_id = o.user_id;
+
+--Расчёт arppu
+
+SELECT 
+CAST(DATE_TRUNC('year', CAST(o.created_at AS DATE)) AS DATE) AS year_arppu,
+ROUND(SUM(o.total_amt) / COUNT(DISTINCT u.user_id), 2) AS arppu
+    
+FROM tools_shop.users u
+JOIN tools_shop.orders o ON u.user_id = o.user_id
+GROUP BY CAST(DATE_TRUNC('year', CAST(o.created_at AS DATE)) AS DATE);
+
+
+--Расчёт РОИ
+
+SELECT TO_DATE(TO_CHAR(DATE_TRUNC('month', dc.created_at), 'YYYY-MM') || '-01', 'YYYY-MM-DD') AS month,
+       --SUM(dc.costs) AS total_costs,
+       --SUM(dr.revenue) AS total_revenue,
+       ROUND(SUM(dr.revenue) * 100.0 / NULLIF(SUM(dc.costs), 0), 6) AS ROI
+FROM
+  (SELECT DATE_TRUNC('month', created_at) AS created_at,
+          SUM(costs) AS costs
+   FROM tools_shop.costs
+   GROUP BY DATE_TRUNC('month', created_at)) dc
+JOIN
+  (SELECT DATE_TRUNC('month', paid_at) AS paid_month,
+          SUM(total_amt) AS revenue
+   FROM tools_shop.orders
+   GROUP BY DATE_TRUNC('month', paid_at)) dr ON DATE_TRUNC('month', dc.created_at) = DATE_TRUNC('month', dr.paid_month)
+GROUP BY DATE_TRUNC('month', dc.created_at)
+ORDER BY DATE_TRUNC('month', dc.created_at);
+
+
+
+
+
+
+-- Сформированный отчёт для расчёта процента аппрува за определённую дату. 
+
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
 	 	DECLARE @D_START DATETIME, 
 		@D_END DATETIME;
@@ -52,7 +109,7 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
 
 
 
-
+--Статистика лидов по продуктам и странам за определенный период
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
