@@ -144,7 +144,41 @@ ORDER BY product;
 
 
 
+Запрос на построение таблицы, со связкой лид - тип лида, по признаку происхождения лида, внутри одной и той же таблицы:
 
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH ParentData AS (
+    SELECT
+        o.id,
+        o.OrderDate,
+        o.OrderType,
+        o.UniqueId
+    FROM Orders o
+    LEFT JOIN OrderTypes ot ON o.OrderType = ot.id
+    WHERE o.OrderDate BETWEEN '2024-01-01' AND '2024-08-01'
+      AND ot.TypeName IN ('TypeA', 'TypeB')
+), ChildData AS (
+    SELECT
+        o.id,
+        o.OrderDate,
+        ot.TypeName AS OrderType,
+        o.RelatedOrder
+    FROM Orders o
+    LEFT JOIN OrderTypes ot ON o.OrderType = ot.id
+    WHERE o.OrderDate BETWEEN '2024-01-01' AND '2024-08-01'
+)
+SELECT
+    parent.id AS parent_order_id,
+    child.id AS child_order_id,
+    parent.OrderDate AS parent_order_date,
+    child.OrderDate AS child_order_date,
+    child.OrderType AS child_order_type
+FROM ParentData parent
+LEFT JOIN ChildData child ON parent.UniqueId = child.RelatedOrder
+WHERE child.id IS NOT NULL
+AND parent.id = '9443455'
+ORDER BY parent.OrderDate;
 
 
 
