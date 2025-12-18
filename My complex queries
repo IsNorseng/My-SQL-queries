@@ -50,7 +50,65 @@ ORDER BY DATE_TRUNC('month', dc.created_at);
 
 
 
+-- Сформированный отчёт для рассчёта данных по складским продажам:
 
+```sql
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+SELECT 
+    t1.client_country,
+    t1.main_product,
+    t1.additional_product,
+    AVG(t1.cost_percentage) AS avg_cost_percentage,
+    AVG(t1.additional_price) AS avg_additional_price,
+    AVG(t1.avg_additional_product_value) AS avg_additional_product_value,
+    t2.total_approved_orders,
+    COUNT(DISTINCT t1.order_id) AS orders_with_additional_product,
+    SUM(t1.additional_quantity) AS total_additional_quantity
+FROM
+    (SELECT
+        o.id AS order_id,
+        o.country as client_country,
+        os.name AS order_status,
+        p1.name AS main_product,
+        o.total_amount AS order_total_value,
+        p2.name AS additional_product,
+        op.quantity AS additional_quantity,
+        op.additional_price,
+        ap.cost_percentage,
+        (o.total_amount - ((ap.cost_percentage * op.quantity) + (op.additional_price * op.quantity))) AS order_value_without_additional,
+        CAST(((ap.cost_percentage + op.additional_price) * op.quantity) AS float) / CAST(op.quantity AS float) AS avg_additional_product_value
+    FROM Orders o
+    LEFT JOIN OrderStatus os ON o.status_id = os.id
+    LEFT JOIN Products p1 ON o.product_id = p1.id
+    LEFT JOIN OrderAdditionalProducts op ON op.order_id = o.id 
+    LEFT JOIN AdditionalProducts ap ON op.additional_product_id = ap.id 
+    LEFT JOIN Products p2 ON ap.product_item_id = p2.id 
+    WHERE o.order_date BETWEEN '2023-01-01' AND '2023-02-01'
+        AND p2.name IS NOT NULL
+        AND o.is_approved = 1
+        AND o.order_type = 0
+        AND op.is_active = 1
+    ) AS t1
+LEFT JOIN 
+    (SELECT 
+        p3.name AS product_name,
+        COUNT(o.id) AS total_approved_orders
+    FROM Orders o
+    LEFT JOIN OrderStatus os ON o.status_id = os.id
+    LEFT JOIN Products p3 ON o.product_id = p3.id
+    WHERE o.order_date BETWEEN '2023-01-01' AND '2023-02-01'
+        AND o.is_approved = 1
+        AND o.order_type = 0
+    GROUP BY p3.name
+    ) AS t2
+    ON t1.main_product = t2.product_name
+GROUP BY 
+    t1.client_country, 
+    t1.main_product, 
+    t1.additional_product, 
+    t2.total_approved_orders
+```
 
 
 -- Сформированный отчёт для расчёта процента аппрува за определённую дату. 
