@@ -1,0 +1,40 @@
+--Запрос считает метрики качества лидов по регионам ('RU','NY') за указанный период:
+--Долю валидных, одобренных, отклонённых и отклонённых по конкретным причинам лидов.
+--Проценты callback, звонков и чистых продаж.
+--Итоговые показатели (percent_valid_leads, dirt_approve, clean_approve, work_approve и др.) выводятся с округлением до 4 знаков.
+--Внутри - агрегация с группировкой по региону, используются левые соединения с таблицами-справочниками статусов.
+
+
+
+-- SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SELECT 
+    Region,
+    ROUND(valid_leads / total_leads, 4) AS percent_valid_leads,
+    ROUND(approved_leads / total_leads, 4) AS dirt_approve,
+    ROUND(approved_leads / valid_leads, 4) AS clean_approve,
+    ROUND(Rejection / total_leads, 4) AS percent_rejection,
+    ROUND(Declined / total_leads, 4) AS percent_declined,
+    ROUND(Non_Existing_Number / total_leads, 4) AS percent_non_existing_number,
+    ROUND(Callback / total_leads, 4) AS percent_callback,
+    ROUND(CallbackOut / total_leads, 4) AS percent_callback_out,
+    ROUND(isConnected / total_leads, 4) AS percent_isConnected,
+    ROUND(approved_leads / (approved_leads + Rejection), 4) AS work_approve
+FROM
+    (SELECT
+            t1.Region,
+            CAST(COUNT(t1.id) AS float) AS total_leads,
+            COUNT(CASE WHEN t4.StatusName <> 'Declined' AND t4.StatusName <> 'Test' THEN t1.id END) AS valid_leads,
+            COUNT(CASE WHEN t1.Flag1 = 1 THEN t1.id END) AS approved_leads,
+            COUNT(CASE WHEN t4.StatusName = 'Rejection' THEN t1.id END) AS Rejection,
+            AVG(t1.Amount1) AS avg_check,
+            COUNT(CASE WHEN t4.StatusName = 'Declined' THEN t1.id END) AS Declined,
+            COUNT(CASE WHEN t3.StatusName = 'Non Existing Number' THEN 1 END) AS Non_Existing_Number,
+            COUNT(CASE WHEN t4.StatusName = 'Callback' THEN t1.id END) AS Callback,
+            COUNT(CASE WHEN t4.StatusName = 'CallbackOut' THEN t1.id END) AS CallbackOut,
+            COUNT(CASE WHEN t1.IsConnectedFlag = 1 THEN t1.id END) AS isConnected
+     FROM Table1 t1
+        LEFT JOIN Table2 t2 ON t1.ProductId = t2.id
+        LEFT JOIN Table3 t3 ON t3.id = t1.SubStatusId
+        LEFT JOIN Table4 t4 ON t1.StatusId = t4.id
+     WHERE (t1.Region = 'RU' OR t1.Region = 'NY') AND t1.OrderDate BETWEEN '2026-02-20' AND '2026-02-23'
+     GROUP BY t1.Region ) as a
