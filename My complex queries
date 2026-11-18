@@ -1,58 +1,108 @@
 
---Расчёт LTV
+-- Накопленный LTV по месяцу регистрации пользователя.
+-- LTV = выручка когорты / число зарегистрированных пользователей.
 
-SELECT 
-    DATE_TRUNC('month', u.created_at)::date AS account_creation_month,
-    SUM(o.total_amt) / COUNT(DISTINCT o.user_id) AS ltv
-FROM 
-    tools_shop.users AS u
-INNER JOIN 
-    tools_shop.orders AS o ON u.user_id = o.user_id
-GROUP BY 
-    account_creation_month;
+WITH user_revenue AS (
+    SELECT
+        user_id,
+        SUM(total_amt) AS revenue
+    FROM tools_shop.orders
+    GROUP BY user_id
+)
 
-
---Расчёт конверсии
-
-SELECT ROUND(COUNT(DISTINCT o.user_id) * 100.0 / COUNT(DISTINCT u.user_id), 1) AS conversion_rate
+SELECT
+    DATE_TRUNC('month', u.created_at)::date AS registration_month,
+    COUNT(*) AS total_users,
+    COUNT(r.user_id) AS paying_users,
+    ROUND(
+        SUM(COALESCE(r.revenue, 0))::numeric
+        / NULLIF(COUNT(*), 0),
+        2
+    ) AS ltv
 FROM tools_shop.users AS u
-LEFT JOIN tools_shop.orders AS o ON u.user_id = o.user_id;
-
---Расчёт arppu
-
-SELECT 
-CAST(DATE_TRUNC('year', CAST(o.created_at AS DATE)) AS DATE) AS year_arppu,
-ROUND(SUM(o.total_amt) / COUNT(DISTINCT u.user_id), 2) AS arppu
-    
-FROM tools_shop.users u
-JOIN tools_shop.orders o ON u.user_id = o.user_id
-GROUP BY CAST(DATE_TRUNC('year', CAST(o.created_at AS DATE)) AS DATE);
+LEFT JOIN user_revenue AS r
+    ON u.user_id = r.user_id
+GROUP BY DATE_TRUNC('month', u.created_at)::date
+ORDER BY registration_month;
 
 
---Расчёт РОИ
+-- Конверсия зарегистрированных пользователей в покупатели.
+-- Conversion Rate = покупатели / пользователи * 100%.
 
-SELECT TO_DATE(TO_CHAR(DATE_TRUNC('month', dc.created_at), 'YYYY-MM') || '-01', 'YYYY-MM-DD') AS month,
-       --SUM(dc.costs) AS total_costs,
-       --SUM(dr.revenue) AS total_revenue,
-       ROUND(SUM(dr.revenue) * 100.0 / NULLIF(SUM(dc.costs), 0), 6) AS ROI
-FROM
-  (SELECT DATE_TRUNC('month', created_at) AS created_at,
-          SUM(costs) AS costs
-   FROM tools_shop.costs
-   GROUP BY DATE_TRUNC('month', created_at)) dc
-JOIN
-  (SELECT DATE_TRUNC('month', paid_at) AS paid_month,
-          SUM(total_amt) AS revenue
-   FROM tools_shop.orders
-   GROUP BY DATE_TRUNC('month', paid_at)) dr ON DATE_TRUNC('month', dc.created_at) = DATE_TRUNC('month', dr.paid_month)
-GROUP BY DATE_TRUNC('month', dc.created_at)
-ORDER BY DATE_TRUNC('month', dc.created_at);
+SELECT
+    COUNT(DISTINCT u.user_id) AS total_users,
+    COUNT(DISTINCT o.user_id) AS paying_users,
+    ROUND(
+        COUNT(DISTINCT o.user_id) * 100.0
+        / NULLIF(COUNT(DISTINCT u.user_id), 0),
+        2
+    ) AS conversion_rate_pct
+FROM tools_shop.users AS u
+LEFT JOIN tools_shop.orders AS o
+    ON u.user_id = o.user_id;
 
 
+-- Среднегодовой ARPPU.
+-- ARPPU = выручка за год / уникальные покупатели за год.
 
--- Сформированный отчёт для рассчёта данных по складским продажам:
+SELECT
+    DATE_TRUNC('year', o.created_at)::date AS order_year,
+    COUNT(DISTINCT o.user_id) AS paying_users,
+    SUM(o.total_amt) AS total_revenue,
+    ROUND(
+        SUM(o.total_amt)::numeric
+        / NULLIF(COUNT(DISTINCT o.user_id), 0),
+        2
+    ) AS arppu
+FROM tools_shop.orders AS o
+INNER JOIN tools_shop.users AS u
+    ON o.user_id = u.user_id
+GROUP BY DATE_TRUNC('year', o.created_at)::date
+ORDER BY order_year;
 
-```sql
+
+-- Помесячная рентабельность затрат.
+-- ROI = (выручка - затраты) / затраты * 100%.
+
+WITH monthly_costs AS (
+    SELECT
+        DATE_TRUNC('month', created_at)::date AS month,
+        SUM(costs) AS total_costs
+    FROM tools_shop.costs
+    GROUP BY DATE_TRUNC('month', created_at)::date
+),
+
+monthly_revenue AS (
+    SELECT
+        DATE_TRUNC('month', paid_at)::date AS month,
+        SUM(total_amt) AS total_revenue
+    FROM tools_shop.orders
+    WHERE paid_at IS NOT NULL
+    GROUP BY DATE_TRUNC('month', paid_at)::date
+)
+
+SELECT
+    COALESCE(c.month, r.month) AS month,
+    COALESCE(r.total_revenue, 0) AS total_revenue,
+    COALESCE(c.total_costs, 0) AS total_costs,
+    ROUND(
+        (
+            COALESCE(r.total_revenue, 0)
+            - COALESCE(c.total_costs, 0)
+        )::numeric * 100.0
+        / NULLIF(c.total_costs, 0),
+        2
+    ) AS roi_pct
+FROM monthly_costs AS c
+FULL OUTER JOIN monthly_revenue AS r
+    ON c.month = r.month
+ORDER BY month;
+
+
+Отчёт по продажам дополнительных товаров
+-- Анализ продаж дополнительных товаров.
+-- Период: январь 2023 года.
+
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
 
 SELECT 
@@ -108,135 +158,216 @@ GROUP BY
     t1.main_product, 
     t1.additional_product, 
     t2.total_approved_orders
-```
 
 
--- Сформированный отчёт для расчёта процента аппрува за определённую дату. 
+Статистика лидов по продуктам и странам
 
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
-	 	DECLARE @D_START DATETIME, 
-		@D_END DATETIME;
-	
-		SET @D_START = '2023-10-28';
-		SET @D_END = '2023-11-10';
-		SELECT
-		pr.Name,
-		lr.Area,
-		COUNT(lr.id) AS total_records,
-		approved_records.approved_entries,
-		ROUND(CAST(reject_records.reject_entries AS float) / CAST(COUNT(lr.id) AS float), 4) AS percent_denial,
-		approved_records.average_value AS average_value,
-		ROUND(SUM(CAST(lr.Approval AS float)) / CAST(COUNT(lr.id) AS float), 4) AS dirty_approval,
-		ROUND(SUM(CAST(lr.Approval AS float)) / CAST(approved_records.approved_entries + reject_records.reject_entries AS float), 4) AS operational_approval
-		FROM Record lr 
-		LEFT JOIN Product pr ON lr.Product =pr.id
-		LEFT JOIN (
-				SELECT
-				pr.Name AS approved_product,
-				lr.Area AS  approved_area,	
-				pr.SubType AS approved_subtype,
-				CAST(COUNT(lr.id) AS float) AS approved_entries,
-				AVG(lr.TotalAmountWithoutDeadstock) AS average_value
-				FROM Record lr 
-				LEFT JOIN Product pr ON lr.Product = pr.id
-				WHERE lr.Approval = 1
-				AND lr.DateOfRecord BETWEEN @D_START AND @D_END
-				AND lr.Type = 0
-				GROUP BY pr.Name, lr.Area, pr.SubType
-					) AS approved_records
-				ON pr.Name = approved_records.approved_product
-			LEFT JOIN (
-				SELECT
-				pr.Name AS reject_product,
-				lr.Area AS  reject_area,	
-				CAST(COUNT(lr.id) AS float) AS  reject_entries
-				FROM Record lr
-				LEFT JOIN Product pr ON lr.Product = pr.id
-				WHERE lr.RecordStatus = 4
-				AND lr.DateOfRecord BETWEEN  @D_START AND @D_END
-				AND lr.Type = 0
-				GROUP BY pr.Name, lr.Area
-					) AS reject_records
-				ON pr.Name = reject_records.reject_product
-		WHERE lr.DateOfRecord BETWEEN @D_START AND @D_END
-		AND lr.Type = 0
-		GROUP BY pr.Name, lr.Area, approved_records.approved_entries , approved_records.average_value, reject_records.reject_entries
+-- Dirty Approval = одобренные / все записи.
+-- Operational Approval = одобренные / (одобренные + отказы).
 
+DECLARE
+    @D_START DATE = '2023-10-28',
+    @D_END DATE = '2023-11-10';
 
-
-
-
-
---Статистика лидов по продуктам и странам за определенный период
-
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-WITH cte_leads AS (
-  SELECT
-    l.oid,
-    p.Name AS product,
-    l.Country AS GEO,
-    p.ProductSubType,
-    l.TotalAmountWithoutDeadstock,
-    l.LeadStatus,
-    l.LeadType,
-    l.Approve,
-    l.DateOfOrder
-  FROM Lead l
-  LEFT JOIN Product p ON l.Product = p.Oid
-  WHERE l.DateOfOrder BETWEEN '2022-10-29' AND '2022-11-05'
-    AND l.LeadType = 0
-    )
-SELECT
-  'Product' AS Name,
-  'Country' AS Country,
-  COUNT(oid) AS total_leads,
-  COUNT(CASE WHEN Approve = 1 THEN oid END) AS approved_leads,
-  ROUND(CAST(COUNT(CASE WHEN LeadStatus = 4 THEN oid END) AS float) / NULLIF(COUNT(oid), 0), 4) AS percent_rejection,
-  AVG(TotalAmountWithoutDeadstock) AS avg_check,
-  ROUND(SUM(CAST(Approve AS float)) / NULLIF(COUNT(Oid), 0), 4) AS dirt_approve,
-  ROUND(CAST(COUNT(CASE WHEN Approve = 1 THEN oid END) AS float) / NULLIF((CAST(COUNT(CASE WHEN Approve = 1 THEN oid END) AS float) + CAST(COUNT(CASE WHEN LeadStatus = 4 THEN oid END) AS float)), 0), 4) AS work_approve
-FROM cte_leads
-GROUP BY product, GEO
-ORDER BY product;
-
-
-
-Запрос на построение таблицы, со связкой лид - тип лида, по признаку происхождения лида, внутри одной и той же таблицы:
-
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-WITH ParentData AS (
+WITH approval_metrics AS (
     SELECT
-        o.id,
-        o.OrderDate,
-        o.OrderType,
-        o.UniqueId
-    FROM Orders o
-    LEFT JOIN OrderTypes ot ON o.OrderType = ot.id
-    WHERE o.OrderDate BETWEEN '2024-01-01' AND '2024-08-01'
-      AND ot.TypeName IN ('TypeA', 'TypeB')
-), ChildData AS (
-    SELECT
-        o.id,
-        o.OrderDate,
-        ot.TypeName AS OrderType,
-        o.RelatedOrder
-    FROM Orders o
-    LEFT JOIN OrderTypes ot ON o.OrderType = ot.id
-    WHERE o.OrderDate BETWEEN '2024-01-01' AND '2024-08-01'
+        p.Name AS product_name,
+        r.Area AS region,
+
+        COUNT(*) AS total_records,
+
+        SUM(
+            CASE WHEN r.Approval = 1 THEN 1 ELSE 0 END
+        ) AS approved_entries,
+
+        SUM(
+            CASE WHEN r.RecordStatus = 4 THEN 1 ELSE 0 END
+        ) AS rejected_entries,
+
+        AVG(
+            CASE
+                WHEN r.Approval = 1
+                THEN CAST(r.TotalAmountWithoutDeadstock AS DECIMAL(18, 2))
+            END
+        ) AS average_approved_value
+
+    FROM Record AS r
+
+    LEFT JOIN Product AS p
+        ON r.Product = p.id
+
+    WHERE r.DateOfRecord >= @D_START
+      AND r.DateOfRecord < DATEADD(DAY, 1, @D_END)
+      AND r.Type = 0
+
+    GROUP BY
+        p.id,
+        p.Name,
+        r.Area
 )
+
+SELECT
+    product_name,
+    region,
+    total_records,
+    approved_entries,
+    rejected_entries,
+    average_approved_value,
+
+    ROUND(
+        rejected_entries * 1.0
+        / NULLIF(total_records, 0),
+        4
+    ) AS percent_denial,
+
+    ROUND(
+        approved_entries * 1.0
+        / NULLIF(total_records, 0),
+        4
+    ) AS dirty_approval,
+
+    ROUND(
+        approved_entries * 1.0
+        / NULLIF(approved_entries + rejected_entries, 0),
+        4
+    ) AS operational_approval
+
+FROM approval_metrics
+
+ORDER BY
+    product_name,
+    region;
+
+
+-- Статистика лидов по продуктам и странам.
+-- Период: 29 октября - 5 ноября 2022 года.
+
+DECLARE
+    @D_START DATE = '2022-10-29',
+    @D_END DATE = '2022-11-05';
+
+WITH lead_metrics AS (
+    SELECT
+        p.Name AS product,
+        l.Country AS geo,
+
+        COUNT(*) AS total_leads,
+
+        SUM(
+            CASE WHEN l.Approve = 1 THEN 1 ELSE 0 END
+        ) AS approved_leads,
+
+        SUM(
+            CASE WHEN l.LeadStatus = 4 THEN 1 ELSE 0 END
+        ) AS rejected_leads,
+
+        AVG(
+            CAST(l.TotalAmountWithoutDeadstock AS DECIMAL(18, 2))
+        ) AS avg_lead_amount
+
+    FROM Lead AS l
+
+    LEFT JOIN Product AS p
+        ON l.Product = p.Oid
+
+    WHERE l.DateOfOrder >= @D_START
+      AND l.DateOfOrder < DATEADD(DAY, 1, @D_END)
+      AND l.LeadType = 0
+
+    GROUP BY
+        p.Oid,
+        p.Name,
+        l.Country
+)
+
+SELECT
+    product,
+    geo,
+    total_leads,
+    approved_leads,
+    rejected_leads,
+    avg_lead_amount,
+
+    ROUND(
+        rejected_leads * 1.0
+        / NULLIF(total_leads, 0),
+        4
+    ) AS percent_rejection,
+
+    ROUND(
+        approved_leads * 1.0
+        / NULLIF(total_leads, 0),
+        4
+    ) AS dirty_approval,
+
+    ROUND(
+        approved_leads * 1.0
+        / NULLIF(approved_leads + rejected_leads, 0),
+        4
+    ) AS operational_approval
+
+FROM lead_metrics
+
+ORDER BY
+    product,
+    geo;
+
+
+Поиск заказов, созданных на основе других заказов, с определением типа дочернего заказа.
+
+-- Анализ связей между исходными и производными заказами.
+-- Связь: Parent.UniqueId = Child.RelatedOrder.
+
+DECLARE
+    @D_START DATE = '2024-01-01',
+    @D_END DATE = '2024-08-01';
+
+WITH parent_orders AS (
+    SELECT
+        o.id,
+        o.OrderDate,
+        o.UniqueId
+    FROM Orders AS o
+
+    INNER JOIN OrderTypes AS ot
+        ON o.OrderType = ot.id
+
+    WHERE o.OrderDate >= @D_START
+      AND o.OrderDate < DATEADD(DAY, 1, @D_END)
+      AND ot.TypeName IN ('TypeA', 'TypeB')
+),
+
+child_orders AS (
+    SELECT
+        o.id,
+        o.OrderDate,
+        o.RelatedOrder,
+        ot.TypeName AS order_type
+    FROM Orders AS o
+
+    LEFT JOIN OrderTypes AS ot
+        ON o.OrderType = ot.id
+
+    WHERE o.OrderDate >= @D_START
+      AND o.OrderDate < DATEADD(DAY, 1, @D_END)
+)
+
 SELECT
     parent.id AS parent_order_id,
     child.id AS child_order_id,
     parent.OrderDate AS parent_order_date,
     child.OrderDate AS child_order_date,
-    child.OrderType AS child_order_type
-FROM ParentData parent
-LEFT JOIN ChildData child ON parent.UniqueId = child.RelatedOrder
-WHERE child.id IS NOT NULL
-AND parent.id = '9443455'
-ORDER BY parent.OrderDate;
+    child.order_type AS child_order_type
+
+FROM parent_orders AS parent
+
+INNER JOIN child_orders AS child
+    ON parent.UniqueId = child.RelatedOrder
+
+ORDER BY
+    parent.OrderDate,
+    child.OrderDate;
+
 
 
 
