@@ -1,40 +1,195 @@
---Запрос считает метрики качества лидов по регионам ('RU','NY') за указанный период:
---Долю валидных, одобренных, отклонённых и отклонённых по конкретным причинам лидов.
---Проценты callback, звонков и чистых продаж.
---Итоговые показатели (percent_valid_leads, dirt_approve, clean_approve, work_approve и др.) выводятся с округлением до 4 знаков.
---Внутри - агрегация с группировкой по региону, используются левые соединения с таблицами-справочниками статусов.
 
+-- Анализ качества лидов по регионам (RU, NY).
+-- Период: 20–23 февраля 2026 года.
+-- Метрики: валидность, одобрение, отказы, обратные звонки,
+-- установленные соединения и операционный аппрув.
+-- Все доли округляются до 4 знаков.
 
+WITH lead_metrics AS (
+    SELECT
+        t1.Region AS region,
+        COUNT(t1.id) AS total_leads,
 
--- SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
-SELECT 
-    Region,
-    ROUND(valid_leads / total_leads, 4) AS percent_valid_leads,
-    ROUND(approved_leads / total_leads, 4) AS dirt_approve,
-    ROUND(approved_leads / valid_leads, 4) AS clean_approve,
-    ROUND(Rejection / total_leads, 4) AS percent_rejection,
-    ROUND(Declined / total_leads, 4) AS percent_declined,
-    ROUND(Non_Existing_Number / total_leads, 4) AS percent_non_existing_number,
-    ROUND(Callback / total_leads, 4) AS percent_callback,
-    ROUND(CallbackOut / total_leads, 4) AS percent_callback_out,
-    ROUND(isConnected / total_leads, 4) AS percent_isConnected,
-    ROUND(approved_leads / (approved_leads + Rejection), 4) AS work_approve
-FROM
-    (SELECT
-            t1.Region,
-            CAST(COUNT(t1.id) AS float) AS total_leads,
-            COUNT(CASE WHEN t4.StatusName <> 'Declined' AND t4.StatusName <> 'Test' THEN t1.id END) AS valid_leads,
-            COUNT(CASE WHEN t1.Flag1 = 1 THEN t1.id END) AS approved_leads,
-            COUNT(CASE WHEN t4.StatusName = 'Rejection' THEN t1.id END) AS Rejection,
-            AVG(t1.Amount1) AS avg_check,
-            COUNT(CASE WHEN t4.StatusName = 'Declined' THEN t1.id END) AS Declined,
-            COUNT(CASE WHEN t3.StatusName = 'Non Existing Number' THEN 1 END) AS Non_Existing_Number,
-            COUNT(CASE WHEN t4.StatusName = 'Callback' THEN t1.id END) AS Callback,
-            COUNT(CASE WHEN t4.StatusName = 'CallbackOut' THEN t1.id END) AS CallbackOut,
-            COUNT(CASE WHEN t1.IsConnectedFlag = 1 THEN t1.id END) AS isConnected
-     FROM Table1 t1
-        LEFT JOIN Table2 t2 ON t1.ProductId = t2.id
-        LEFT JOIN Table3 t3 ON t3.id = t1.SubStatusId
-        LEFT JOIN Table4 t4 ON t1.StatusId = t4.id
-     WHERE (t1.Region = 'RU' OR t1.Region = 'NY') AND t1.OrderDate BETWEEN '2026-02-20' AND '2026-02-23'
-     GROUP BY t1.Region ) as a
+        -- Валидные и одобренные лиды.
+        COUNT(CASE
+            WHEN t4.StatusName NOT IN ('Declined', 'Test')
+            THEN t1.id
+        END) AS valid_leads,
+
+        COUNT(CASE
+            WHEN t1.Flag1 = 1 THEN t1.id
+        END) AS approved_leads,
+
+        -- Отказы и причины отклонения.
+        COUNT(CASE
+            WHEN t4.StatusName = 'Rejection' THEN t1.id
+        END) AS rejected_leads,
+
+        COUNT(CASE
+            WHEN t4.StatusName = 'Declined' THEN t1.id
+        END) AS declined_leads,
+
+        COUNT(CASE
+            WHEN t3.StatusName = 'Non Existing Number' THEN t1.id
+        END) AS invalid_numbers,
+
+        -- Обратные звонки и соединения.
+        COUNT(CASE
+            WHEN t4.StatusName = 'Callback' THEN t1.id
+        END) AS callback_leads,
+
+        COUNT(CASE
+            WHEN t4.StatusName = 'CallbackOut' THEN t1.id
+        END) AS callback_out_leads,
+
+        COUNT(CASE
+            WHEN t1.IsConnectedFlag = 1 THEN t1.id
+        END) AS connected_leads
+
+    FROM Table1 AS t1
+
+    LEFT JOIN Table3 AS t3
+        ON t1.SubStatusId = t3.id
+
+    LEFT JOIN Table4 AS t4
+        ON t1.StatusId = t4.id
+
+    WHERE t1.Region IN ('RU', 'NY')
+      AND t1.OrderDate >= '20260220'
+      AND t1.OrderDate < '20260224'
+
+    GROUP BY t1.Region
+)
+
+SELECT
+    region,
+    total_leads,
+
+    -- Качество лидов.
+    ROUND(valid_leads * 1.0 / NULLIF(total_leads, 0), 4)
+        AS percent_valid_leads,
+
+    ROUND(approved_leads * 1.0 / NULLIF(total_leads, 0), 4)
+        AS dirt_approve,
+
+    ROUND(approved_leads * 1.0 / NULLIF(valid_leads, 0), 4)
+        AS clean_approve,
+
+    -- Статистика отказов.
+    ROUND(rejected_leads * 1.0 / NULLIF(total_leads, 0), 4)
+        AS percent_rejection,
+
+    ROUND(declined_leads * 1.0 / NULLIF(total_leads, 0), 4)
+        AS percent_declined,
+
+    ROUND(invalid_numbers * 1.0 / NULLIF(total_leads, 0), 4)
+        AS percent_non_existing_number,
+
+    -- Обратные звонки и соединения.
+    ROUND(callback_leads * 1.0 / NULLIF(total_leads, 0), 4)
+        AS percent_callback,
+
+    ROUND(callback_out_leads * 1.0 / NULLIF(total_leads, 0), 4)
+        AS percent_callback_out,
+
+    ROUND(connected_leads * 1.0 / NULLIF(total_leads, 0), 4)
+        AS percent_isConnected,
+
+    -- Операционный аппрув.
+    ROUND(
+        approved_leads * 1.0
+        / NULLIF(approved_leads + rejected_leads, 0),
+        4
+    ) AS work_approve
+
+FROM lead_metrics
+ORDER BY region;
+
+-------------------------------------------------------------------------------------
+
+-- Анализ пересечения зон покрытия курьерских служб.
+-- Территория: регион + почтовый индекс.
+-- Индекс Жаккара = пересечение / объединение.
+-- Каждая пара служб учитывается один раз.
+
+WITH coverage AS (
+    -- Уникальные территории обслуживания.
+    SELECT DISTINCT
+        region,
+        postal_code,
+        carrier
+    FROM analytics.courier_coverage
+    WHERE region IS NOT NULL
+      AND postal_code IS NOT NULL
+      AND carrier IS NOT NULL
+),
+
+carrier_coverage AS (
+    -- Количество территорий каждой службы.
+    SELECT
+        carrier,
+        COUNT(*) AS total_areas
+    FROM coverage
+    GROUP BY carrier
+),
+
+carrier_pairs AS (
+    -- Формирование всех уникальных пар операторов.
+    SELECT
+        a.carrier AS carrier_a,
+        b.carrier AS carrier_b,
+        a.total_areas AS areas_a,
+        b.total_areas AS areas_b
+    FROM carrier_coverage AS a
+    INNER JOIN carrier_coverage AS b
+        ON a.carrier < b.carrier
+),
+
+intersections AS (
+    -- Территории, обслуживаемые обеими службами.
+    SELECT
+        a.carrier AS carrier_a,
+        b.carrier AS carrier_b,
+        COUNT(*) AS shared_areas
+    FROM coverage AS a
+    INNER JOIN coverage AS b
+        ON a.region = b.region
+       AND a.postal_code = b.postal_code
+       AND a.carrier < b.carrier
+    GROUP BY
+        a.carrier,
+        b.carrier
+)
+
+SELECT
+    p.carrier_a,
+    p.carrier_b,
+    p.areas_a,
+    p.areas_b,
+
+    COALESCE(i.shared_areas, 0) AS shared_areas,
+
+    -- Объединённое покрытие двух операторов.
+    p.areas_a + p.areas_b
+        - COALESCE(i.shared_areas, 0) AS union_areas,
+
+    -- Индекс Жаккара (от 0 до 1).
+    ROUND(
+        COALESCE(i.shared_areas, 0)::numeric
+        / NULLIF(
+            p.areas_a + p.areas_b
+            - COALESCE(i.shared_areas, 0), 0
+        ),
+        4
+    ) AS jaccard_index,
+
+    -- Дополнительное покрытие второй службы.
+    p.areas_b - COALESCE(i.shared_areas, 0)
+        AS additional_areas_b
+
+FROM carrier_pairs AS p
+LEFT JOIN intersections AS i
+    ON p.carrier_a = i.carrier_a
+   AND p.carrier_b = i.carrier_b
+
+ORDER BY union_areas DESC;
